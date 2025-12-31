@@ -7,71 +7,74 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
 from sklearn.ensemble import RandomForestRegressor
 
-# ------------------------------------
+# ======================================================
 # PAGE CONFIG
-# ------------------------------------
+# ======================================================
 st.set_page_config(
     page_title="ReturnAI – FMCG Return Reduction",
     layout="wide"
 )
 
 st.title("📦 ReturnAI – FMCG AI Return Reduction Platform")
-st.caption("AI-powered intelligence to reduce expired returns using ML forecasting")
+st.caption("AI-powered planning intelligence to reduce expiry & returns")
 
-# ------------------------------------
+# ======================================================
 # SIDEBAR – FILE UPLOAD
-# ------------------------------------
-st.sidebar.header("📂 Upload Data")
+# ======================================================
+st.sidebar.header("📂 Upload FMCG Sales & Return Data")
 
 uploaded_file = st.sidebar.file_uploader(
-    "Upload Sales & Returns Excel File",
+    "Upload Excel file (Sheet2)",
     type=["xlsx"]
 )
 
 if uploaded_file is None:
-    st.info("👈 Please upload an Excel file to start analysis")
+    st.info("👈 Upload your Excel file to start analysis")
     st.stop()
 
-# ------------------------------------
-# LOAD DATA SAFELY
-# ------------------------------------
-xls = pd.ExcelFile(uploaded_file)
-sheet = st.sidebar.selectbox("Select Sheet", xls.sheet_names)
+# ======================================================
+# DATA LOADING & CLEANING (PIVOT → AI READY)
+# ======================================================
+@st.cache_data
+def load_and_clean_data(file):
 
-df = pd.read_excel(uploaded_file, sheet_name=sheet)
+    raw = pd.read_excel(file, sheet_name="Sheet2", header=None)
 
-# ------------------------------------
-# DATA CLEANING
-# ------------------------------------
-df.columns = (
-    df.columns
-    .str.lower()
-    .str.strip()
-    .str.replace(" ", "_")
-)
+    # Extract years
+    years = raw.iloc[2, 1::3].values
 
-required_cols = [
-    "product",
-    "year",
-    "net_sales_value",
-    "expired_returns_value",
-    "wastage"
-]
+    products = raw.iloc[4:, 0].values
 
-missing = [c for c in required_cols if c not in df.columns]
+    records = []
 
-if missing:
-    st.error(f"❌ Missing columns in data: {missing}")
-    st.stop()
+    for i, product in enumerate(products):
+        row = raw.iloc[4 + i, 1:].values
 
-df["return_ratio"] = df["expired_returns_value"] / df["net_sales_value"]
-df["wastage_ratio"] = df["wastage"] / df["net_sales_value"]
+        for j, year in enumerate(years):
+            idx = j * 3
+            records.append({
+                "product": str(product),
+                "year": int(year),
+                "net_sales_value": float(row[idx]),
+                "wastage": float(row[idx + 1]),
+                "expired_returns_value": float(row[idx + 2])
+            })
 
-df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
+    df = pd.DataFrame(records)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-# ------------------------------------
-# SIDEBAR FILTER
-# ------------------------------------
+    # Feature engineering
+    df["return_ratio"] = df["expired_returns_value"] / df["net_sales_value"]
+    df["wastage_ratio"] = df["wastage"] / df["net_sales_value"]
+
+    return df
+
+
+df = load_and_clean_data(uploaded_file)
+
+# ======================================================
+# SIDEBAR FILTERS
+# ======================================================
 st.sidebar.header("🔍 Filters")
 
 selected_product = st.sidebar.selectbox(
@@ -79,9 +82,9 @@ selected_product = st.sidebar.selectbox(
     sorted(df["product"].unique())
 )
 
-# ------------------------------------
+# ======================================================
 # EXECUTIVE DASHBOARD
-# ------------------------------------
+# ======================================================
 st.subheader("📊 Executive Dashboard")
 
 col1, col2, col3, col4 = st.columns(4)
@@ -93,32 +96,37 @@ col4.metric("Total Wastage (₹)", f"{df['wastage'].sum():,.0f}")
 
 st.divider()
 
-# ------------------------------------
+# ======================================================
 # SALES vs RETURNS TREND
-# ------------------------------------
+# ======================================================
 st.subheader("📈 Sales vs Expired Returns Trend")
 
+trend_df = df.groupby("year").sum(numeric_only=True).reset_index()
+
 fig, ax = plt.subplots()
-ax.plot(df["year"], df["net_sales_value"], label="Net Sales", marker="o")
-ax.plot(df["year"], df["expired_returns_value"], label="Expired Returns", marker="o")
+ax.plot(trend_df["year"], trend_df["net_sales_value"], marker="o", label="Net Sales")
+ax.plot(trend_df["year"], trend_df["expired_returns_value"], marker="o", label="Expired Returns")
 ax.set_xlabel("Year")
 ax.set_ylabel("₹ Value")
 ax.legend()
 st.pyplot(fig)
 
-# ------------------------------------
-# PRODUCT RISK SEGMENTATION (AI)
-# ------------------------------------
+# ======================================================
+# PRODUCT RISK SEGMENTATION (CLUSTERING)
+# ======================================================
 st.subheader("🔥 Product Risk Segmentation (AI Clustering)")
 
-features = df[
-    ["net_sales_value", "expired_returns_value", "return_ratio", "wastage_ratio"]
-]
+cluster_features = df[[
+    "net_sales_value",
+    "expired_returns_value",
+    "return_ratio",
+    "wastage_ratio"
+]]
 
 scaler = StandardScaler()
-X_scaled = scaler.fit_transform(features)
+X_scaled = scaler.fit_transform(cluster_features)
 
-kmeans = KMeans(n_clusters=3, random_state=42)
+kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
 df["risk_cluster"] = kmeans.fit_predict(X_scaled)
 
 risk_map = {0: "Low Risk", 1: "Medium Risk", 2: "High Risk"}
@@ -130,9 +138,9 @@ st.dataframe(
     use_container_width=True
 )
 
-# ------------------------------------
+# ======================================================
 # SKU INTELLIGENCE
-# ------------------------------------
+# ======================================================
 st.subheader("🧠 SKU Intelligence")
 
 sku_df = df[df["product"] == selected_product]
@@ -140,7 +148,7 @@ sku_df = df[df["product"] == selected_product]
 col1, col2 = st.columns(2)
 
 with col1:
-    st.write("### Sales Trend")
+    st.write("### Net Sales Trend")
     fig, ax = plt.subplots()
     ax.plot(sku_df["year"], sku_df["net_sales_value"], marker="o")
     ax.set_xlabel("Year")
@@ -148,13 +156,9 @@ with col1:
     st.pyplot(fig)
 
 with col2:
-    st.write("### Return Trend")
+    st.write("### Expired Returns Trend")
     fig, ax = plt.subplots()
-    ax.plot(
-        sku_df["year"],
-        sku_df["expired_returns_value"],
-        marker="o"
-    )
+    ax.plot(sku_df["year"], sku_df["expired_returns_value"], marker="o", color="red")
     ax.set_xlabel("Year")
     ax.set_ylabel("₹ Returns")
     st.pyplot(fig)
@@ -164,23 +168,21 @@ avg_return = sku_df["return_ratio"].mean()
 st.metric(
     "AI Return Risk Score",
     f"{avg_return*100:.1f}%",
+    help="Higher value indicates higher expiry/return risk"
 )
 
-# ------------------------------------
-# FORECASTING
-# ------------------------------------
-st.subheader("🔮 Expired Return Forecast")
+# ======================================================
+# FORECASTING (RANDOM FOREST)
+# ======================================================
+st.subheader("🔮 Forecast: Expired Returns")
 
 X = df[["year"]]
 y = df["expired_returns_value"]
 
-model = RandomForestRegressor(
-    n_estimators=200,
-    random_state=42
-)
+model = RandomForestRegressor(random_state=42)
 model.fit(X, y)
 
-next_year = int(df["year"].max() + 1)
+next_year = df["year"].max() + 1
 forecast = model.predict([[next_year]])[0]
 
 st.metric(
@@ -188,60 +190,57 @@ st.metric(
     f"₹ {forecast:,.0f}"
 )
 
-# ------------------------------------
+# ======================================================
 # AI RECOMMENDATION ENGINE
-# ------------------------------------
+# ======================================================
 st.subheader("🤖 AI Recommendations")
 
 if avg_return > 0.15:
-    st.error("""
-🔴 **High Return Risk**
+    st.error(f"""
+    🔴 **High Return Risk Detected**
 
-**Actions**
-- Reduce production by 15–20%
-- Shorten replenishment cycles
-- Avoid blanket promotions
-- SKU rationalization required
-""")
+    **Actions:**
+    - Reduce production by 15–20%
+    - Shorter replenishment cycles
+    - Targeted promotions only
+    - SKU rationalization
+
+    **Potential Saving:** ₹ {(forecast * 0.25):,.0f}
+    """)
 
 elif avg_return > 0.08:
-    st.warning("""
-🟡 **Moderate Return Risk**
+    st.warning(f"""
+    🟡 **Moderate Return Risk**
 
-**Actions**
-- Improve demand forecasting
-- Regional stock reallocation
-- Better shelf-life planning
-""")
+    **Actions:**
+    - Improve demand forecasting
+    - Regional reallocation
+    - Shelf-life planning
+
+    **Potential Saving:** ₹ {(forecast * 0.15):,.0f}
+    """)
 
 else:
     st.success("""
-🟢 **Low Return Risk**
+    🟢 **Low Return Risk**
 
-**Actions**
-- Maintain current planning
-- Monitor monthly
-""")
+    **Actions:**
+    - Maintain current planning
+    - Monitor periodically
+    """)
 
-# ------------------------------------
+# ======================================================
 # IMPACT SIMULATION
-# ------------------------------------
-st.subheader("📉 Return Reduction Simulation")
+# ======================================================
+st.subheader("📉 Impact Simulation")
 
-reduction = st.slider(
-    "Expected Reduction in Returns (%)",
-    0, 40, 20
-)
-
+reduction = st.slider("Expected Reduction in Returns (%)", 0, 40, 20)
 savings = forecast * (reduction / 100)
 
-st.metric(
-    "Projected Savings",
-    f"₹ {savings:,.0f}"
-)
+st.metric("Projected Savings (₹)", f"{savings:,.0f}")
 
-# ------------------------------------
+# ======================================================
 # FOOTER
-# ------------------------------------
+# ======================================================
 st.divider()
-st.caption("ReturnAI | FMCG AI Planning Intelligence | Pilot-ready MVP")
+st.caption("ReturnAI | FMCG AI Planning Intelligence | Pilot-Ready MVP")
