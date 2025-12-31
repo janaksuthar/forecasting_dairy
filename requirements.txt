@@ -7,3 +7,4 @@ tensorflow
 streamlit
 keras
 openpyxl
+xgboost
