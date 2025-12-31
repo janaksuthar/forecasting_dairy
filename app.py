@@ -24,7 +24,9 @@ st.caption("AI-powered intelligence to prevent expired & returned FMCG products"
 # ------------------------------------
 @st.cache_data
 def load_data():
-    df = pd.read_excel("data/sales_returns.xlsx", sheet_name=1)
+    xls = pd.ExcelFile(uploaded_file)
+    sheet = st.sidebar.selectbox("Select Sheet", xls.sheet_names)
+    df = pd.read_excel(uploaded_file, sheet_name=sheet)
     return df
 
 df = load_data()
