@@ -234,12 +234,32 @@ def main():
             **{f'lag_{j}_returns': current_row.get(f'lag_{j}_returns', 0) for j in range(1, lag_count+1)}
         }])
 
+        # Ensure columns match training feature order to avoid XGBoost feature_names mismatch
+        if features_sales:
+            # add any missing columns with 0
+            for col in features_sales:
+                if col not in X_next_sales.columns:
+                    X_next_sales[col] = 0
+            # reorder to the exact order used at training
+            X_next_sales = X_next_sales[features_sales]
+
         pred_sales = max(0, model_sales.predict(X_next_sales)[0])
         sales_forecast.append(pred_sales)
 
         # Use predicted sales as feature for returns
+        # Start from the same ordered features (or construct from X_next_sales)
         X_next_returns = X_next_sales.copy()
-        X_next_returns['lag_1_sales'] = pred_sales  # approximate - in reality would be more sophisticated
+        # If the returns model expects 'lag_1_sales', update it with the predicted sales
+        if features_returns and 'lag_1_sales' in features_returns:
+            # If 'lag_1_sales' exists in the df, set to pred_sales; otherwise add it and then reorder below
+            X_next_returns['lag_1_sales'] = pred_sales
+
+        # Ensure all features expected by returns model exist and are in correct order
+        if features_returns:
+            for col in features_returns:
+                if col not in X_next_returns.columns:
+                    X_next_returns[col] = 0
+            X_next_returns = X_next_returns[features_returns]
 
         pred_returns = max(0, model_returns.predict(X_next_returns)[0])
         returns_forecast.append(pred_returns)
