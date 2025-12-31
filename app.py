@@ -23,6 +23,12 @@ st.caption("AI-powered intelligence to prevent expired & returned FMCG products"
 # LOAD DATA
 # ------------------------------------
 @st.cache_data
+st.sidebar.header("📂 Upload Data")
+
+uploaded_file = st.sidebar.file_uploader(
+    "Upload Sales & Returns Excel File",
+    type=["xlsx"]
+)
 def load_data():
     xls = pd.ExcelFile(uploaded_file)
     sheet = st.sidebar.selectbox("Select Sheet", xls.sheet_names)
