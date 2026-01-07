@@ -27,11 +27,11 @@ except ImportError:
 
 
 # =========================
-# CONFIG
+# CONFIGURATION
 # =========================
 SHELF_LIFE_MAP = {
-    'Milk': 7, 'Yoghurt': 21, 'Cheese': 60, 'UHT Milk': 180,
-    'Fresh Juice': 5, 'Cream': 14
+    'Milk': 7, 'Yoghurt': 21, 'Cheese': 60,
+    'UHT Milk': 180, 'Fresh Juice': 5, 'Cream': 14
 }
 
 MONTH_TO_NUM = {
@@ -42,11 +42,24 @@ MONTH_TO_NUM = {
 
 COLUMN_MAPPING = {
     'Brand': 'brand',
-    'English Month': 'month',
     'Calendar Year': 'year',
     'Net Sales Value CAF': 'sales',
     'Exp Returns Value': 'returns'
 }
+
+
+# =========================
+# UTILITIES
+# =========================
+def detect_month_column(df):
+    candidates = [
+        'month', 'Month', 'MONTH',
+        'English Month', 'Month Name', 'month_name'
+    ]
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
 
 
 # =========================
@@ -56,7 +69,7 @@ def get_ai_insights(api_key, context):
     if not GROQ_AVAILABLE or not api_key:
         return None
 
-    client = Groq(api_key=gsk_8h6hd31kthKsKlTRVvqcWGdyb3FY25FbkscZkIzKRrpSCiidjxD8y)
+    client = Groq(api_key=api_key)
 
     prompt = f"""
 You are a supply chain AI expert.
@@ -72,7 +85,7 @@ Provide:
 1. Model trustworthiness
 2. Inventory risks
 3. Actionable decisions
-4. Human validation points
+4. What humans must verify
 """
 
     response = client.chat.completions.create(
@@ -85,20 +98,39 @@ Provide:
 
 
 # =========================
-# DATA PREP
+# DATA LOADING
 # =========================
 @st.cache_data
 def load_data(file):
     df = pd.read_excel(file)
+    df.columns = df.columns.str.strip()
     df.rename(columns=COLUMN_MAPPING, inplace=True)
 
-    df['month_num'] = df['month'].map(MONTH_TO_NUM)
+    # Detect month column safely
+    month_col = detect_month_column(df)
+    if month_col is None:
+        st.error("❌ Month column not found (English Month / Month / numeric)")
+        st.stop()
+
+    # Convert month
+    if df[month_col].dtype == object:
+        df['month_num'] = df[month_col].str.strip().map(MONTH_TO_NUM)
+    else:
+        df['month_num'] = pd.to_numeric(df[month_col], errors='coerce')
+
+    if df['month_num'].isnull().any():
+        bad = df.loc[df['month_num'].isnull(), month_col].unique()
+        st.error(f"❌ Invalid month values found: {bad}")
+        st.stop()
+
+    df['year'] = pd.to_numeric(df['year'], errors='coerce')
     df['date'] = pd.to_datetime(
         df['year'].astype(str) + '-' + df['month_num'].astype(str) + '-01'
     )
 
     df['sales'] = pd.to_numeric(df['sales'], errors='coerce').clip(lower=0)
     df['returns'] = pd.to_numeric(df['returns'], errors='coerce').clip(lower=0)
+
     df['shelf_life_days'] = df['brand'].map(SHELF_LIFE_MAP).fillna(30)
 
     monthly = df.groupby(['date', 'brand']).agg({
@@ -146,7 +178,7 @@ def train_model(df, target):
 
 
 # =========================
-# APP
+# STREAMLIT APP
 # =========================
 def main():
     st.set_page_config("XAI Sales Forecast", layout="wide")
@@ -154,18 +186,22 @@ def main():
     st.title("🧠 Explainable AI Sales Forecasting")
     st.caption("Human-in-the-loop inventory decision system")
 
-    uploaded = st.file_uploader("Upload Excel File", type="xlsx")
+    uploaded = st.file_uploader("📁 Upload Excel File", type="xlsx")
     if not uploaded:
         st.stop()
 
     df = load_data(uploaded)
     brands = df['brand'].unique()
-    brand = st.selectbox("Select Brand", brands)
-    horizon = st.slider("Forecast Months", 1, 18, 6)
+    brand = st.selectbox("🏷️ Select Brand", brands)
+    horizon = st.slider("📅 Forecast Months", 1, 18, 6)
 
     df_b = df[df['brand'] == brand].copy()
     df_b['month_num'] = df_b['date'].dt.month
     df_b = add_lags(df_b)
+
+    if len(df_b) < 12:
+        st.error("❌ At least 12 months of data required")
+        st.stop()
 
     sales_model, sales_feat, sales_m = train_model(df_b, 'sales')
     ret_model, ret_feat, ret_m = train_model(df_b, 'returns')
@@ -189,14 +225,14 @@ def main():
 
     tab1, tab2, tab3 = st.tabs(["📈 Forecast", "🔍 Explainability", "🤖 AI Insights"])
 
-    # -------- Forecast
+    # Forecast
     with tab1:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_b['date'], y=df_b['sales'], name="Actual Sales"))
         fig.add_trace(go.Scatter(x=dates, y=sales_fc, name="Forecast Sales", line=dict(dash="dash")))
         st.plotly_chart(fig, use_container_width=True)
 
-    # -------- Explainability
+    # Explainability
     with tab2:
         st.subheader("Feature Importance (Sales)")
         fi = pd.DataFrame({
@@ -204,10 +240,8 @@ def main():
             "Importance": sales_model.feature_importances_
         }).sort_values("Importance", ascending=False)
 
-        st.plotly_chart(
-            px.bar(fi, x="Importance", y="Feature", orientation="h"),
-            use_container_width=True
-        )
+        st.plotly_chart(px.bar(fi, x="Importance", y="Feature", orientation="h"),
+                        use_container_width=True)
 
         if SHAP_AVAILABLE:
             explainer = shap.TreeExplainer(sales_model)
@@ -217,19 +251,16 @@ def main():
             ).mean().sort_values(ascending=False)
 
             st.subheader("SHAP Mean |Impact|")
-            st.plotly_chart(
-                px.bar(
-                    shap_df,
-                    x=shap_df.values,
-                    y=shap_df.index,
-                    orientation="h"
-                ),
-                use_container_width=True
-            )
+            st.plotly_chart(px.bar(
+                shap_df,
+                x=shap_df.values,
+                y=shap_df.index,
+                orientation="h"
+            ), use_container_width=True)
 
-    # -------- AI Insights
+    # AI Insights
     with tab3:
-        api_key = st.text_input("Groq API Key", type="password")
+        api_key = st.text_input("🔑 Groq API Key", type="password")
         if st.button("Generate AI Insights"):
             context = {
                 "brand": brand,
