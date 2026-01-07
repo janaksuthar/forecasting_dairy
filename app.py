@@ -23,6 +23,10 @@ try:
 except Exception:
     SHAP_AVAILABLE = False
 
+# Default Groq/LLM endpoint & model (app selects a sensible default)
+DEFAULT_GROQ_ENDPOINT = "https://api.groq.ai/v1/llm/predict"
+DEFAULT_GROQ_MODEL = "groq-llm-large"
+
 # ────────────────────────────────────────────────────────────────
 # 1. Shelf-life mapping (days)
 # ────────────────────────────────────────────────────────────────
@@ -283,7 +287,7 @@ def generate_llm_summary(report: dict, groq_conf: dict = None) -> str:
         # Build a compact prompt combining metrics + KPIs + short table of top features
         prompt_obj = {
             "role": "system",
-            "content": "You are a senior supply-chain expert. Produce a clear explanation why the forecasting model produced the outputs, prioritized actions to reduce reverse logistics (returns), estimated return-volume and cost savings, and a short automation rule set. Output must be JSON with keys: explanation, actions (list of {priority, action, rationale}), estimates (estimated_returns_avoided_volume, estimated_reverse_logistics_cost_saving, percent_reduction), automation_rules (list). Keep numbers and assumptions explicit."
+            "content": "You are a senior supply-chain expert. Produce a clear explanation why the forecasting model produced the outputs, prioritized actions to reduce reverse logistics (returns), estimated impact and concise recommendations."
         }
 
         features_sales = report.get("feature_importance_sales", [])[:6]
@@ -337,34 +341,31 @@ def main():
     # File uploader for sales input
     uploaded_file = st.sidebar.file_uploader("Upload your sales Excel file", type=["xlsx"])
 
-    # --- New: Groq / LLM configuration in sidebar ---
-    st.sidebar.header("LLM / Groq Integration (optional)")
-    groq_key_file = st.sidebar.file_uploader("Upload Groq API key (text file)", type=["txt", "key"])
-    groq_api_key = None
-    if groq_key_file is not None:
-        try:
-            groq_api_key = groq_key_file.read().decode().strip()
-            st.sidebar.success("Groq key loaded (in-memory).")
-        except Exception:
-            st.sidebar.error("Could not read Groq key file. Ensure it's a plain text file with the API key.")
-            groq_api_key = None
-
-    groq_endpoint = st.sidebar.text_input("Groq/LLM endpoint (full URL)", value="")
-    groq_model = st.sidebar.text_input("LLM model name (id)", value="")
+    # --- Groq / LLM configuration in sidebar (required) ---
+    st.sidebar.header("Groq LLM Integration (required)")
+    st.sidebar.markdown("Paste your Groq API key below. The app will use a default, recommended endpoint and model (no need to provide them).")
+    groq_api_key = st.sidebar.text_input("Groq API key (paste)", type="password")
 
     # Reverse logistics cost per unit (used to estimate cost saving)
     st.sidebar.header("Cost / Savings inputs")
     reverse_cost_per_unit = st.sidebar.number_input("Estimated reverse logistics cost per unit", min_value=0.0, value=5.0, step=0.1)
 
-    # File required check
-    if uploaded_file is None:
-        st.info("Please upload your '3 sales.xlsx' file to start.")
+    # File & key required check
+    if uploaded_file is None or not groq_api_key or groq_api_key.strip() == "":
+        st.info("Please upload your '3 sales.xlsx' file and paste your Groq API key (in the sidebar) to start.")
         st.stop()
+
+    # Use default endpoint/model and the pasted key
+    groq_conf_global = {
+        "api_key": groq_api_key.strip(),
+        "endpoint": DEFAULT_GROQ_ENDPOINT,
+        "model": DEFAULT_GROQ_MODEL
+    }
 
     with st.spinner("Loading and preparing data..."):
         monthly, raw_df = load_and_prepare_data(uploaded_file)
 
-    # ── Sidebar controls ────────────────────────────────────────────
+    # ── Sidebar controls ───────────────────────────────────────────
     st.sidebar.header("Forecast Settings")
 
     available_brands = sorted(monthly['brand'].unique())
@@ -412,7 +413,7 @@ def main():
 
     product_data['month_num'] = product_data['date'].dt.month
 
-    # ── Train models ────────────────────────────────────────────────
+    # ── Train models ───────────────────────────────────────────────
     model_sales, features_sales, X_sales, y_sales = train_xgboost_brand(product_data, 'sales')
     model_returns, features_returns, X_returns, y_returns = train_xgboost_brand(product_data, 'returns')
 
@@ -528,7 +529,7 @@ def main():
         df_compare['Sim Recommended Stock'] = df_forecast['Recommended Stock']
         df_compare['Delta Stock'] = 0.0
 
-    # ── Results Visualization ───────────────────────────────────────
+    # ── Results Visualization ─────────────────────────────────────
     st.subheader(f"Forecast for **{selected_brand}** ({forecast_months} months)")
 
     col1, col2 = st.columns(2)
@@ -674,11 +675,7 @@ def main():
                 "feature_importance_sales": compute_feature_importance(model_sales, features_sales, X_sample=X_sales.head(200)).to_dict(orient='records'),
                 "feature_importance_returns": compute_feature_importance(model_returns, features_returns, X_sample=X_returns.head(200)).to_dict(orient='records'),
             }
-            groq_conf = {
-                "api_key": groq_api_key,
-                "endpoint": groq_endpoint,
-                "model": groq_model
-            } if groq_api_key else None
+            groq_conf = groq_conf_global
             summary = generate_llm_summary(report, groq_conf)
             append_log_row("escalations_log.csv", {
                 "timestamp": datetime.now().isoformat(),
@@ -780,13 +777,9 @@ def main():
         # --- New: Request Groq expert recommendations ---
         st.subheader("LLM-driven supply-chain recommendations (Groq)")
 
-        groq_conf = {
-            "api_key": groq_api_key,
-            "endpoint": groq_endpoint,
-            "model": groq_model
-        } if groq_api_key and groq_endpoint and groq_model else None
+        groq_conf = groq_conf_global
 
-        st.markdown("Use the Groq/LLM to produce an expert explanation & prioritized actions. Provide Groq key + endpoint & model in the sidebar to enable.")
+        st.markdown("Use the Groq/LLM to produce an expert explanation & prioritized actions. Provide Groq key in the sidebar to enable (the app will use a recommended endpoint & model).")
         if st.button("Get Groq Expert Recommendation"):
             with st.spinner("Generating expert recommendation from LLM..."):
                 # Build report similar to escalation
@@ -940,17 +933,12 @@ def main():
 
     with st.expander("How to connect an LLM for summaries and escalation"):
         st.markdown("""
-        - Provide Groq API key (text file) and fill endpoint + model name in the sidebar.
+        - Paste your Groq API key in the sidebar. The app uses default endpoint & model for convenience.
         - The app will construct a compact JSON report and ask the LLM (acting as supply-chain expert) for:
           * explanation of forecast,
           * prioritized actions to reduce returns,
           * estimated return-volume avoided and cost savings,
           * suggested automation rules for decisioning.
-        - Example (pseudo):
-          1) upload key file
-          2) set endpoint (e.g., https://api.groq.ai/v1/llm/predict)
-          3) set model id/name
-          4) click 'Get Groq Expert Recommendation'
         - For production, move keys to a secure secret store & call LLM from a trusted server or backend.
         """)
 
