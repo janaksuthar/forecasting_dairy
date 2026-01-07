@@ -67,7 +67,7 @@ def get_ai_insights(groq_api_key, context_data, user_question=None):
         return None
     
     try:
-        client = Groq(api_key=groq_api_key)
+        client = Groq(api_key=gsk_8h6hd31kthKsKlTRVvqcWGdyb3FY25FbkscZkIzKRrpSCiidjxD8y)
         
         # Build comprehensive context
         prompt = f"""You are an expert AI assistant for supply chain and inventory management. 
